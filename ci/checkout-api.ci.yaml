@@ -1,0 +1,83 @@
+# Lives at .forgejo/workflows/ci.yaml in the checkout-api CODE repo.
+# Trunk-based flow:
+#   any branch  -> build image sha-<7> (previews use it)
+#   push main   -> auto-bump STAGING overlay in gitops repo  (commit straight to main)
+#   dispatch    -> open PR bumping PROD overlay               (CODEOWNERS review)
+name: ci
+on:
+  push:
+    branches: [main]              # trunk only. No release/* branches.
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      promote_tag:
+        description: "Image tag to promote to prod, e.g. sha-3f9c2a1 (must already run in staging)"
+        required: true
+
+env:
+  IMAGE: registry.example.com/payments/checkout-api
+  GITOPS_REPO: git.example.com/payments/gitops.git
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: docker
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "tag=sha-$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+      - name: build, test, push
+        run: |
+          docker build -t "$IMAGE:${{ steps.meta.outputs.tag }}" .
+          docker run --rm "$IMAGE:${{ steps.meta.outputs.tag }}" ./run-tests
+          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login registry.example.com -u ci-bot --password-stdin
+          docker push "$IMAGE:${{ steps.meta.outputs.tag }}"
+          # cosign sign "$IMAGE:${{ steps.meta.outputs.tag }}"   # supply chain, if you want it
+
+  promote-staging:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: payments/gitops
+          ref: main
+          token: ${{ secrets.GITOPS_TOKEN }}
+      - name: bump staging tag and push to main
+        run: |
+          TAG="${{ needs.build.outputs.tag }}"
+          cd apps/checkout-api/overlays/staging
+          kustomize edit set image "$IMAGE=$IMAGE:$TAG"
+          git config user.name ci-bot
+          git config user.email ci-bot@example.com
+          git diff --quiet || git commit -am "checkout-api: staging -> $TAG"
+          # concurrent writers: rebase-retry instead of force
+          for i in 1 2 3; do git push origin main && break || git pull --rebase origin main; done
+          # Argo CD auto-syncs checkout-api-staging within ~3 min (or instantly via webhook).
+
+  promote-prod:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: payments/gitops
+          ref: main
+          token: ${{ secrets.GITOPS_TOKEN }}
+      - name: open PR bumping prod tag
+        run: |
+          TAG="${{ inputs.promote_tag }}"
+          git checkout -b "promote/checkout-api-$TAG"
+          cd apps/checkout-api/overlays/prod
+          kustomize edit set image "$IMAGE=$IMAGE:$TAG"
+          git config user.name ci-bot
+          git config user.email ci-bot@example.com
+          git commit -am "checkout-api: prod -> $TAG"
+          git push origin HEAD
+          # tea = Gitea/Forgejo CLI. CODEOWNERS routes review to release managers.
+          tea pr create --repo payments/gitops --base main \
+            --title "Promote checkout-api $TAG to prod" \
+            --description "Staging has run $TAG since $(date -u +%F). Diff: overlays/prod image tag only."

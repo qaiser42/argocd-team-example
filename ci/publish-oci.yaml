@@ -1,0 +1,47 @@
+# Lives at .forgejo/workflows/publish-oci.yaml in the GITOPS repo (optional).
+# Publishes deployable artifacts to an OCI registry so Argo CD can pull them
+# without git access. See argocd/reference/oci-sources.yaml for the consumer side.
+name: publish-oci
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'charts/**'
+
+env:
+  REGISTRY: registry.example.com
+
+jobs:
+  helm-chart:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "${{ secrets.REGISTRY_TOKEN }}" | helm registry login "$REGISTRY" -u ci-bot --password-stdin
+          VERSION=$(yq '.version' charts/checkout-api/Chart.yaml)      # semver, bumped in git
+          helm lint charts/checkout-api
+          helm package charts/checkout-api --version "$VERSION" \
+            --app-version "$(git rev-parse --short=7 HEAD)"
+          # Pushes to oci://registry.example.com/payments/charts/checkout-api:<VERSION>
+          helm push "checkout-api-$VERSION.tgz" "oci://$REGISTRY/payments/charts"
+          # cosign sign "$REGISTRY/payments/charts/checkout-api:$VERSION"
+
+  kustomize-artifact:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          SHA="sha-$(git rev-parse --short=7 HEAD)"
+          echo "${{ secrets.REGISTRY_TOKEN }}" | oras login "$REGISTRY" -u ci-bot --password-stdin
+          # Argo CD wants ONE layer, media type application/vnd.oci.image.layer.v1.tar+gzip
+          # (or the helm chart type). Tarball keeps the `apps/...` prefix so Application.path
+          # stays identical to the git layout. (`oras push <ref> .` from inside a dir also works.)
+          tar -czf gitops.tar.gz --exclude=.git apps
+          oras push "$REGISTRY/payments/gitops:$SHA" \
+            --annotation "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            --annotation "org.opencontainers.image.source=https://git.example.com/payments/gitops" \
+            --annotation "org.opencontainers.image.version=$SHA" \
+            gitops.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip
+          # Consumer: repoURL oci://registry.example.com/payments/gitops, targetRevision $SHA,
+          # path apps/checkout-api/overlays/staging  (argocd/reference/oci-sources.yaml)

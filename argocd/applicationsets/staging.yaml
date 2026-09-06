@@ -1,0 +1,60 @@
+# STAGING ApplicationSet.
+# Git directory generator: every `apps/<name>/overlays/staging` directory on
+# branch `main` becomes an Application `<name>-staging`. Adding a new service =
+# adding a directory. No Argo config change, no new branch.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: payments-staging
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]   # fail loudly on typos instead of rendering empty strings
+  generators:
+    - git:
+        repoURL: https://git.example.com/payments/gitops.git
+        revision: main                       # trunk. Same revision as prod.
+        directories:
+          - path: apps/*/overlays/staging
+  template:
+    metadata:
+      # path.segments = [apps, checkout-api, overlays, staging]
+      name: '{{index .path.segments 1}}-staging'
+      labels:
+        team: payments
+        environment: staging
+        app.kubernetes.io/name: '{{index .path.segments 1}}'
+      annotations:
+        notifications.argoproj.io/subscribe.on-sync-failed.slack: payments-alerts
+        notifications.argoproj.io/subscribe.on-health-degraded.slack: payments-alerts
+      # Deleting the Application deletes the k8s resources (cascade). Omit for "detach".
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: team-payments
+      source:
+        repoURL: https://git.example.com/payments/gitops.git
+        targetRevision: main
+        path: '{{.path.path}}'               # apps/checkout-api/overlays/staging
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: payments-staging
+      syncPolicy:
+        automated:
+          prune: true                        # delete what git deleted
+          selfHeal: true                     # revert kubectl edits -> git is the only way in
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true                   # create/update first, prune at the end
+          - ApplyOutOfSyncOnly=true          # cheaper syncs on big apps
+          - ServerSideApply=true             # no last-applied annotation size limit, better conflicts
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m
+      revisionHistoryLimit: 5
+  syncPolicy:
+    # Directory removed from git -> Application removed -> resources pruned (finalizer).
+    preserveResourcesOnDeletion: false

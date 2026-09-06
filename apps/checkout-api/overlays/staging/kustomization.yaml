@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Staging overlay.
+# Trunk-based: staging and prod both track branch `main`; the ONLY difference is
+# this directory. No release/staging branches, no cherry-picks.
+namespace: payments-staging
+resources:
+  - ../../base
+labels:
+  - pairs:
+      environment: staging
+images:
+  # Immutable tag = short git SHA of the app repo. Written by CI on every push to
+  # main (ci/checkout-api.ci.yaml). Never `latest`.
+  - name: registry.example.com/payments/checkout-api
+    newTag: sha-3f9c2a1
+replicas:
+  - name: checkout-api
+    count: 2
+configMapGenerator:
+  - name: checkout-api-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=debug
+      - PAYMENT_GATEWAY_URL=https://sandbox.gateway.example.com
+patches:
+  - target:
+      kind: Ingress
+      name: checkout-api
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: checkout.staging.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: checkout.staging.example.com

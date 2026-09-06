@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Second app: exists so the ApplicationSets have something to discover.
+resources:
+  - deployment.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: payments
+configMapGenerator:
+  - name: ledger-worker-config
+    literals:
+      - QUEUE_NAME=ledger-events
+      - BATCH_SIZE=50

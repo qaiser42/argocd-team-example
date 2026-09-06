@@ -1,0 +1,75 @@
+# PROD ApplicationSet.
+# Same generator shape as staging, same branch `main`, different directory glob
+# and stricter policies. One ApplicationSet per environment keeps prod-specific
+# safety knobs explicit instead of hidden in template conditionals.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: payments-prod
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: https://git.example.com/payments/gitops.git
+        revision: main
+        directories:
+          - path: apps/*/overlays/prod
+  template:
+    metadata:
+      name: '{{index .path.segments 1}}-prod'
+      labels:
+        team: payments
+        environment: prod
+        app.kubernetes.io/name: '{{index .path.segments 1}}'
+      annotations:
+        notifications.argoproj.io/subscribe.on-sync-failed.slack: payments-oncall
+        notifications.argoproj.io/subscribe.on-health-degraded.slack: payments-oncall
+        notifications.argoproj.io/subscribe.on-deployed.slack: payments-releases
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: team-payments
+      source:
+        repoURL: https://git.example.com/payments/gitops.git
+        targetRevision: main
+        path: '{{.path.path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: payments-prod
+      syncPolicy:
+        # Still automated: git merge IS the deploy. Gates live upstream
+        # (CODEOWNERS review on prod overlay) and in the project's syncWindows.
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false                  # refuse to sync an app down to zero resources
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ApplyOutOfSyncOnly=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true    # don't clobber HPA-managed replicas on sync
+        retry:
+          limit: 3
+          backoff:
+            duration: 1m
+            factor: 2
+            maxDuration: 10m
+      ignoreDifferences:
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas                 # HPA owns this in prod
+      revisionHistoryLimit: 10
+  # Let on-call disable auto-sync on ONE prod app during an incident without the
+  # ApplicationSet immediately re-enabling it.
+  ignoreApplicationDifferences:
+    - jsonPointers:
+        - /spec/syncPolicy
+  syncPolicy:
+    # Never let the generator delete a prod Application by itself (e.g. someone
+    # renames the directory). Removal becomes a deliberate manual step.
+    applicationsSync: create-update
+    preserveResourcesOnDeletion: true

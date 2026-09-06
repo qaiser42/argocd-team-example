@@ -1,0 +1,47 @@
+# REFERENCE ONLY — not applied by the root app (see bootstrap/root.yaml include).
+# This is exactly what applicationsets/staging.yaml generates for checkout-api,
+# written out by hand so every field is visible. Teams with 2-3 apps may prefer
+# plain Applications like this over ApplicationSets; pick one, never both.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: checkout-api-staging
+  namespace: argocd
+  labels:
+    team: payments
+    environment: staging
+    app.kubernetes.io/name: checkout-api
+  annotations:
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: payments-alerts
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: team-payments
+  source:
+    repoURL: https://git.example.com/payments/gitops.git
+    targetRevision: main                           # trunk. NOT a `staging` branch.
+    path: apps/checkout-api/overlays/staging       # environment = directory
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payments-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 5
+  info:
+    - name: Runbook
+      value: https://wiki.example.com/payments/checkout-api
+    - name: Dashboard
+      value: https://grafana.example.com/d/checkout-api?var-env=staging

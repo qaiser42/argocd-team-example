@@ -1,0 +1,100 @@
+# REFERENCE ONLY — OCI as an Argo CD source. Two patterns.
+#
+# Why OCI at all?
+#   * Immutable, signed (cosign), content-addressed artifacts — same supply-chain
+#     story as container images. Git SHA is immutable too, but a git repo is
+#     mutable (force-push, branch delete) and can't be scanned/signed the same way.
+#   * Argo CD never needs git credentials or a git clone for deploy; registry
+#     pulls are faster and cacheable. Good for many clusters / air-gapped.
+#   * Promotion = retag/bump version, optionally with a registry-side policy
+#     (e.g. only signed artifacts may be pulled into prod).
+# Trade-off: loses "git blame on the deployed thing" unless CI records the git
+# SHA in annotations (org.opencontainers.image.revision) — do that.
+---
+# PATTERN 1: Helm chart from an OCI registry + values from the gitops repo (multi-source).
+# Chart is built & pushed by the platform/app team's CI (ci/publish-oci.yaml);
+# per-environment values stay in git next to the kustomize overlays.
+# Promotion = bump `targetRevision` (chart version) and/or values in git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: checkout-api-staging-helm-oci
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: team-payments
+  sources:
+    - repoURL: registry.example.com/payments/charts   # NO oci:// prefix; repo secret has enableOCI=true
+      chart: checkout-api
+      targetRevision: 1.4.2                            # chart semver. Never a floating `*`/`latest` in prod.
+      helm:
+        releaseName: checkout-api
+        valueFiles:
+          - $values/apps/checkout-api/helm/values-staging.yaml
+    - repoURL: https://git.example.com/payments/gitops.git
+      targetRevision: main
+      ref: values                                      # referenced above as $values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payments-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# PATTERN 1b: same chart via the generic OCI source (Argo CD >= 3.1).
+# Chart name becomes part of repoURL, path MUST be `.`, repo cred type `oci`.
+# Prefer this form for new setups; 1 is the older Helm-repo-with-enableOCI form.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: checkout-api-staging-helm-oci-native
+  namespace: argocd
+spec:
+  project: team-payments
+  sources:
+    - repoURL: oci://registry.example.com/payments/charts/checkout-api
+      path: .
+      targetRevision: 1.4.2
+      helm:
+        releaseName: checkout-api
+        valueFiles:
+          - $values/apps/checkout-api/helm/values-staging.yaml
+    - repoURL: https://git.example.com/payments/gitops.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payments-staging
+---
+# PATTERN 2 (Argo CD >= 3.1): kustomize overlay packaged as an OCI artifact.
+# CI tars the `apps/` tree (single layer, media type
+# application/vnd.oci.image.layer.v1.tar+gzip) and pushes it with `oras push`
+# tagged with the git SHA and/or a semver (ci/publish-oci.yaml). Argo CD pulls
+# the artifact, then runs kustomize on `path` inside it — same overlay as from
+# git, different transport. UI shows org.opencontainers.image.* annotations.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: checkout-api-staging-oci
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: team-payments
+  source:
+    repoURL: oci://registry.example.com/payments/gitops   # WITH oci:// prefix; repo secret type=oci
+    targetRevision: sha-3f9c2a1                           # tag or sha256:<digest>; immutable either way
+    path: apps/checkout-api/overlays/staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payments-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

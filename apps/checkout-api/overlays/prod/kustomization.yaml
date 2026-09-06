@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Prod overlay. Same `main` branch as staging.
+# Promotion staging -> prod = PR that bumps `newTag` below (CODEOWNERS forces
+# release-manager review). Rollback = revert that commit.
+namespace: payments-prod
+resources:
+  - ../../base
+  - hpa.yaml
+  - pdb.yaml
+labels:
+  - pairs:
+      environment: prod
+images:
+  # Intentionally behind staging: prod runs what staging validated yesterday.
+  - name: registry.example.com/payments/checkout-api
+    newTag: sha-b7e21d0
+replicas:
+  # Initial value only. HPA owns it afterwards; the Argo Application ignores
+  # /spec/replicas drift (see argocd/applicationsets/prod.yaml).
+  - name: checkout-api
+    count: 3
+configMapGenerator:
+  - name: checkout-api-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=info
+      - PAYMENT_GATEWAY_URL=https://gateway.example.com
+patches:
+  - path: resources-patch.yaml
+  - target:
+      kind: Ingress
+      name: checkout-api
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: checkout.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: checkout.example.com

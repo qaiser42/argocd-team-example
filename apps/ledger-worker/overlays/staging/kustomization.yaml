@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: payments-staging
+resources:
+  - ../../base
+labels:
+  - pairs:
+      environment: staging
+images:
+  - name: registry.example.com/payments/ledger-worker
+    newTag: sha-91ad0c4
+replicas:
+  - name: ledger-worker
+    count: 1
+configMapGenerator:
+  - name: ledger-worker-config
+    behavior: merge
+    literals:
+      - BATCH_SIZE=10

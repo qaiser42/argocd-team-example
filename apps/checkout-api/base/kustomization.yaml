@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Base = environment-agnostic. Never deployed on its own.
+# Overlays pin: image tag, replicas, config values, ingress host, namespace.
+resources:
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: payments
+configMapGenerator:
+  # Hash-suffixed name -> any config change rolls the Deployment automatically.
+  - name: checkout-api-config
+    literals:
+      - LOG_LEVEL=info
+      - HTTP_PORT=8080

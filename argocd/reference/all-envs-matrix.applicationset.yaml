@@ -1,0 +1,66 @@
+# REFERENCE ONLY — alternative to the per-environment ApplicationSets.
+# One ApplicationSet, matrix = (apps discovered in git) x (env list).
+# DRY, but: assumes every app has every overlay, and prod-specific policy ends
+# up inside a templatePatch conditional. We chose per-env sets for readability.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: payments-all-envs
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://git.example.com/payments/gitops.git
+              revision: main
+              directories:
+                - path: apps/*
+          - list:
+              elements:
+                - env: staging
+                  namespace: payments-staging
+                  autoSync: "true"
+                - env: prod
+                  namespace: payments-prod
+                  autoSync: "true"
+  template:
+    metadata:
+      name: '{{.path.basename}}-{{.env}}'
+      labels:
+        team: payments
+        environment: '{{.env}}'
+        app.kubernetes.io/name: '{{.path.basename}}'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: team-payments
+      source:
+        repoURL: https://git.example.com/payments/gitops.git
+        targetRevision: main
+        path: 'apps/{{.path.basename}}/overlays/{{.env}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{.namespace}}'
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+  # Env-specific bits layered on top of the template.
+  templatePatch: |
+    spec:
+      {{- if eq .autoSync "true" }}
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+      {{- end }}
+      {{- if eq .env "prod" }}
+      ignoreDifferences:
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas
+      {{- end }}

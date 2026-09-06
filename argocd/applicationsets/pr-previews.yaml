@@ -1,0 +1,76 @@
+# EPHEMERAL PREVIEW ENVIRONMENTS per pull request.
+# Trunk-based development means short-lived branches; previews let reviewers
+# click through a change before it lands on main. Pull-request generator polls
+# the *code* repo (checkout-api) on Forgejo; manifests still come from the
+# gitops repo's staging overlay on main, so a preview = "staging + this image".
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: checkout-api-pr-previews
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - pullRequest:
+        gitea:                                 # Forgejo speaks the Gitea API
+          owner: payments
+          repo: checkout-api
+          api: https://git.example.com/
+          tokenRef:
+            secretName: forgejo-token
+            key: token
+          insecure: false
+          labels:
+            - preview                          # opt-in: only PRs labelled `preview` get an env (cost control)
+        filters:
+          - targetBranchMatch: ^main$          # trunk only: PRs against anything else get no preview
+        requeueAfterSeconds: 120               # or wire a webhook for instant reaction
+  template:
+    metadata:
+      name: 'checkout-api-pr-{{.number}}'
+      labels:
+        team: payments
+        environment: preview
+        app.kubernetes.io/name: checkout-api
+        pr: '{{.number}}'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: team-payments
+      source:
+        repoURL: https://git.example.com/payments/gitops.git
+        targetRevision: main
+        path: apps/checkout-api/overlays/staging
+        kustomize:
+          # Overrides applied on top of the staging overlay at render time:
+          namespace: 'payments-pr-{{.number}}'
+          images:
+            # CI tags every commit (any branch) as sha-<7 char sha>; same scheme as main.
+            - 'registry.example.com/payments/checkout-api:sha-{{.head_short_sha_7}}'
+          patches:
+            - target:
+                kind: Ingress
+                name: checkout-api
+              patch: |-
+                - op: replace
+                  path: /spec/rules/0/host
+                  value: pr-{{.number}}.checkout.staging.example.com
+                - op: replace
+                  path: /spec/tls/0/hosts/0
+                  value: pr-{{.number}}.checkout.staging.example.com
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'payments-pr-{{.number}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          # Gotcha: a namespace created by CreateNamespace is NOT tracked, so it
+          # survives app deletion. Clean up with a Kyverno/cron policy on
+          # label `environment=preview`, or ship the Namespace in the manifests.
+  syncPolicy:
+    # PR closed/merged -> Application deleted -> resources pruned via finalizer.
+    preserveResourcesOnDeletion: false

@@ -1,0 +1,75 @@
+# One AppProject per team. Fences what the team's Applications may deploy,
+# from where, to where — and who may sync what.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: team-payments
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"   # project must exist before the ApplicationSets that use it
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Payments team workloads (checkout-api, ledger-worker, ...)
+
+  # Only the team's gitops repo may feed Applications in this project.
+  sourceRepos:
+    - https://git.example.com/payments/gitops.git
+    - registry.example.com/payments/charts        # OCI Helm registry, helm-type cred (repos/oci-helm-charts.secret.yaml)
+    - oci://registry.example.com/payments/*       # OCI artifacts: charts + manifests, Argo CD >= 3.1 (reference/oci-sources.yaml)
+
+  # Team may only touch its own namespaces. Pattern covers payments-staging,
+  # payments-prod and preview namespaces payments-pr-123.
+  # Multi-cluster: add more entries with `name: staging-cluster` etc.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: 'payments-*'
+
+  # Cluster-scoped resources: only Namespace (needed for CreateNamespace=true).
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+
+  # Guardrails platform team owns; app teams may not override them from git.
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+
+  # Project-scoped RBAC. Groups come from SSO (OIDC/Dex). Developers can sync
+  # staging and previews; only release managers can sync prod.
+  roles:
+    - name: developer
+      description: read everything, sync non-prod
+      groups:
+        - payments-developers
+      policies:
+        - p, proj:team-payments:developer, applications, get,    team-payments/*,          allow
+        - p, proj:team-payments:developer, applications, sync,   team-payments/*-staging,  allow
+        - p, proj:team-payments:developer, applications, sync,   team-payments/*-pr-*,     allow
+        - p, proj:team-payments:developer, applications, action/*, team-payments/*-staging, allow
+        - p, proj:team-payments:developer, logs,         get,    team-payments/*,          allow
+    - name: release-manager
+      description: full control of the team's applications
+      groups:
+        - payments-release-managers
+      policies:
+        - p, proj:team-payments:release-manager, applications, *, team-payments/*, allow
+
+  # Change freeze: no prod syncs Fri 16:00 -> Mon 06:00 (UTC). manualSync=true
+  # lets a release manager override for a hotfix.
+  syncWindows:
+    - kind: deny
+      schedule: '0 16 * * 5'
+      duration: 62h
+      timeZone: UTC
+      applications:
+        - '*-prod'
+      manualSync: true
+
+  # Warn (don't fail) when something lives in the namespace that git doesn't know about.
+  orphanedResources:
+    warn: true

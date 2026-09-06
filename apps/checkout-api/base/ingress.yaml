@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: checkout-api
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - checkout.example.invalid   # placeholder, every overlay replaces it
+      secretName: checkout-api-tls
+  rules:
+    - host: checkout.example.invalid # placeholder, every overlay replaces it
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: checkout-api
+                port:
+                  name: http

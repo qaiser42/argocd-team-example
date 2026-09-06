@@ -1,0 +1,32 @@
+# App-of-apps root. The ONLY thing applied by hand:
+#   kubectl apply -n argocd -f argocd/bootstrap/root.yaml
+# Afterwards Argo CD manages the project and the ApplicationSets from git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payments-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # `default` project for brevity. Real setup: a dedicated `bootstrap` project
+  # that allows only this repo and only destination namespace `argocd`.
+  project: default
+  source:
+    repoURL: https://git.example.com/payments/gitops.git
+    targetRevision: main
+    path: argocd
+    directory:
+      recurse: true
+      # Explicit allow-list. `reference/` is documentation, `repos/` secrets come
+      # from a secret manager, `bootstrap/` is this file.
+      include: '{projects/*.yaml,applicationsets/*.yaml}'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

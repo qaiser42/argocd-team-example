@@ -1,0 +1,6 @@
+# Forgejo/Gitea CODEOWNERS for the gitops repo.
+# Trunk-based: everyone commits to main, but prod overlays need a release-manager
+# approval. CI writes staging tags directly; prod tags only arrive via reviewed PR.
+apps/*/overlays/prod/   @payments/release-managers
+argocd/projects/        @payments/platform-admins
+argocd/applicationsets/ @payments/platform-admins
